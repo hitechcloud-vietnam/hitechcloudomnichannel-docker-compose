@@ -1,0 +1,236 @@
+x-network: &network
+  networks:
+    - main  
+
+x-depends-datastores: &depends-datastores
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    filesystem:
+      condition: service_healthy
+
+x-environment: &common-vars
+  BETTER_AUTH_SECRET: VLu1KcS63DTTnZU3Dh/ykI9Ld26YQXy/1IMJdZf/kHI=
+  BETTER_AUTH_URL: http://localhost:3123
+  DATABASE_URL: postgresql://hitechcloudomnichannel:secretkey@postgres:5432/hitechcloudomnichannel?schema:public
+  ENCRYPTION_KEY: 51112f8099c4597dff033d2d94c2f4bde95802d3027ecd0944b7647a8861e53e
+  JAVASCRIPT_EXECUTOR_URL: http://javascript-executor:3210
+  JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN:-change-me-in-production-at-least-32-chars}
+  NEXT_PUBLIC_ASSET_URL: http://localhost:9000/hitechcloudomnichannel/
+  NEXT_PUBLIC_BUILDER_URL: http://localhost:3123
+  NEXT_PUBLIC_EDITION: community
+  NODE_OPTIONS: "--max_old_space_size=4096"
+  REALTIME_API_KEY: secretkey
+  REALTIME_BROADCAST_SECRET: e1aad81f3055b8270d0e2fb5692598ce47b929ab76128b158b46d3ff2de9b6d3
+  REDIS_URL: redis://redis:6379
+  RUN_DB_MIGRATE: true
+  RUN_DB_SEED: true
+  S3_ACCESS_KEY_ID: hitechcloudomnichannel
+  S3_BUCKET: hitechcloudomnichannel
+  S3_ENPOINT: http://localhost:9000
+  S3_REGION: us-west-2
+  S3_SECRET_ACCESS_KEY: secretkey
+  SCHEDULER_BUCKET_RANGE: 0-255
+  SMTP_FROM: no-reply@localhost
+  SMTP_SERVER: smtp://username:password@localhost:1025
+
+x-worker: &worker
+  <<: [ *network, *depends-datastores ]
+  image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-worker:latest
+  platform: linux/amd64
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    <<: *common-vars
+
+x-rustfs-environment: &rustfs-environment
+  RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-hitechcloudomnichannel}
+  RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-secretkey}
+
+services:
+  postgres:
+    <<: *network
+    image: timescale/timescaledb-ha:pg18.4-ts2.27.2-all
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/home/postgres/pgdata
+    command: [ "postgres", "-c", "log_statement=${POSTGRES_LOG_STATEMENT:-none}" ]
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-hitechcloudomnichannel}
+      - POSTGRES_USER=${POSTGRES_USER:-hitechcloudomnichannel}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secretkey}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  adminer:
+    <<: *network
+    image: adminer:5.4.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${ADMINER_PORT:-8080}:8080"
+
+  mailhog:
+    <<: *network
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - 1025:1025
+      - 8025:8025
+
+  filesystem:
+    <<: *network
+    image: rustfs/rustfs:1.0.0-beta.8
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      <<: *rustfs-environment
+    volumes:
+      - filesystem-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "curl -f http://127.0.0.1:9000/health && curl -f
+            http://127.0.0.1:9001/rustfs/console/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  filesystem-init:
+    <<: *network
+    image: rustfs/rc:v0.1.22
+    depends_on:
+      filesystem:
+        condition: service_healthy
+    environment:
+      <<: *rustfs-environment
+    entrypoint: >
+      /bin/sh -c "rc alias set local http://filesystem:9000
+      $${RUSTFS_ACCESS_KEY} $${RUSTFS_SECRET_KEY}; rc mb local/hitechcloudomnichannel
+      --ignore-existing; touch /tmp/empty && rc cp /tmp/empty
+      local/hitechcloudomnichannel/public/; rc anonymous set public local/hitechcloudomnichannel/public;"
+
+  redis:
+    <<: *network
+    image: redis:8.8.0-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  builder:
+    <<: [ *network, *depends-datastores ]
+    image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-builder:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      <<: *common-vars
+    ports:
+      - "3123:3000"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3000/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # BullMQ Worker
+  worker:
+    <<: [ *worker ]
+    command: [ "worker", "all" ]
+    networks:
+      - main
+      - javascript-executor-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      filesystem:
+        condition: service_healthy
+      javascript-executor:
+        condition: service_healthy
+
+  # Sandboxed runtime for user-authored JavaScript flow steps.
+  # Isolated on an internal-only network with no host-published port.
+  javascript-executor:
+    image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-javascript-executor:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    networks:
+      - javascript-executor-network
+    environment:
+      JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN:-change-me-in-production-at-least-32-chars}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-2}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 512M
+          pids: 128
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3210/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  realtime:
+    <<: [ *network ]
+    image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-realtime:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    entrypoint: >
+      bash -c "
+        cd /app/apps/realtime;
+        echo "REALTIME_BROADCAST_SECRET=$${REALTIME_BROADCAST_SECRET}" > .env;
+        HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-1999} pnpm dlx partykit dev;
+      "
+    environment:
+      <<: *common-vars
+    ports:
+      - "1999:1999"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  main:
+    driver: bridge
+  javascript-executor-network:
+    driver: bridge
+    internal: true
+
+volumes:
+  db-data:
+  redis-data:
+  filesystem-data:
