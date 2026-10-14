@@ -1,6 +1,21 @@
+# HiTechCloudOmnichannel — local / evaluation stack.
+#
+# This file runs the published images with throwaway local credentials.
+# For a real server layer the production override on top of it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d
+#
+# (see docs/trien-khai-production.md and scripts/install.sh).
+#
+# Images are published by the platform repo's CI (.github/workflows/release.yml):
+#   :main    — every push to main
+#   :X.Y.Z   — every git tag vX.Y.Z (docker/metadata-action strips the "v")
+#   :latest  — the most recent vX.Y.Z tag (does not exist until a release is tagged)
+# Pick one with IMAGE_TAG (default: main).
+
 x-network: &network
   networks:
-    - main  
+    - main
 
 x-depends-datastores: &depends-datastores
   depends_on:
@@ -11,34 +26,40 @@ x-depends-datastores: &depends-datastores
     filesystem:
       condition: service_healthy
 
+# LOCAL-ONLY secrets. Never reuse these values on a server.
 x-environment: &common-vars
   BETTER_AUTH_SECRET: VLu1KcS63DTTnZU3Dh/ykI9Ld26YQXy/1IMJdZf/kHI=
   BETTER_AUTH_URL: http://localhost:3123
-  DATABASE_URL: postgresql://hitechcloudomnichannel:secretkey@postgres:5432/hitechcloudomnichannel?schema:public
+  DATABASE_URL: postgresql://hitechcloudomnichannel:secretkey@postgres:5432/hitechcloudomnichannel?schema=public
   ENCRYPTION_KEY: 51112f8099c4597dff033d2d94c2f4bde95802d3027ecd0944b7647a8861e53e
   JAVASCRIPT_EXECUTOR_URL: http://javascript-executor:3210
   JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN:-change-me-in-production-at-least-32-chars}
-  NEXT_PUBLIC_ASSET_URL: http://localhost:9000/hitechcloudomnichannel/
   NEXT_PUBLIC_BUILDER_URL: http://localhost:3123
   NEXT_PUBLIC_EDITION: community
   NODE_OPTIONS: "--max_old_space_size=4096"
-  REALTIME_API_KEY: secretkey
   REALTIME_BROADCAST_SECRET: e1aad81f3055b8270d0e2fb5692598ce47b929ab76128b158b46d3ff2de9b6d3
+  # Server-side broadcasts go straight to the realtime container instead of
+  # through the public /ws/ URL (packages/business/src/platform/settings.ts).
+  REALTIME_INTERNAL_URL: http://realtime:1999
   REDIS_URL: redis://redis:6379
-  RUN_DB_MIGRATE: true
-  RUN_DB_SEED: true
+  RUN_DB_MIGRATE: "true"
+  # Seeds demo@example.com / Demo@1234 on an empty database (local only!).
+  RUN_DB_SEED: "true"
   S3_ACCESS_KEY_ID: hitechcloudomnichannel
   S3_BUCKET: hitechcloudomnichannel
-  S3_ENPOINT: http://localhost:9000
+  # Presigned upload/download URLs are signed against this endpoint and are
+  # used by the browser too. Add "127.0.0.1 filesystem" to the host's
+  # /etc/hosts so the browser can reach it as well (see README).
+  S3_ENDPOINT: http://filesystem:9000
   S3_REGION: us-west-2
   S3_SECRET_ACCESS_KEY: secretkey
   SCHEDULER_BUCKET_RANGE: 0-255
   SMTP_FROM: no-reply@localhost
-  SMTP_SERVER: smtp://username:password@localhost:1025
+  SMTP_SERVER: smtp://username:password@mailhog:1025
 
 x-worker: &worker
   <<: [ *network, *depends-datastores ]
-  image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-worker:latest
+  image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-worker:${IMAGE_TAG:-main}
   platform: linux/amd64
   restart: unless-stopped
   extra_hosts:
@@ -49,6 +70,11 @@ x-worker: &worker
 x-rustfs-environment: &rustfs-environment
   RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-hitechcloudomnichannel}
   RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-secretkey}
+
+# Node-based HTTP probe (argv[1] = URL, healthy on any status < 500). The
+# builder / realtime / mcp images are built on node:24-trixie-slim, which
+# ships neither curl nor wget.
+x-node-probe: &node-probe "fetch(process.argv[1]).then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
 
 services:
   postgres:
@@ -121,11 +147,16 @@ services:
         condition: service_healthy
     environment:
       <<: *rustfs-environment
+    # "download" = anonymous read on the public/ prefix only. The former
+    # "public" level also grants anonymous s3:PutObject on that prefix
+    # (rustfs/cli crates/cli/src/commands/anonymous.rs). The app never needs
+    # anonymous writes: browser uploads use presigned PUT URLs
+    # (packages/filesystem/src/lib/uploader.ts getPresignedUpload).
     entrypoint: >
       /bin/sh -c "rc alias set local http://filesystem:9000
       $${RUSTFS_ACCESS_KEY} $${RUSTFS_SECRET_KEY}; rc mb local/hitechcloudomnichannel
       --ignore-existing; touch /tmp/empty && rc cp /tmp/empty
-      local/hitechcloudomnichannel/public/; rc anonymous set public local/hitechcloudomnichannel/public;"
+      local/hitechcloudomnichannel/public/; rc anonymous set download local/hitechcloudomnichannel/public;"
 
   redis:
     <<: *network
@@ -140,20 +171,40 @@ services:
       timeout: 5s
       retries: 5
 
+  # Reverse proxy on http://localhost:3123. The app derives its public
+  # realtime URL as <app>/ws/ and its public storage URL as <app>/storage/
+  # (packages/business/src/platform/derive-urls.ts); the builder image only
+  # rewrites those paths under `next dev` (apps/builder/next.config.ts), so a
+  # proxy in front of it has to route them.
+  proxy:
+    <<: *network
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      - builder
+      - realtime
+      - filesystem
+    ports:
+      - "3123:80"
+    volumes:
+      - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile:ro
+
   builder:
     <<: [ *network, *depends-datastores ]
-    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-builder:latest
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-builder:${IMAGE_TAG:-main}
     platform: linux/amd64
     restart: unless-stopped
     environment:
       <<: *common-vars
-    ports:
-      - "3123:3000"
+      # Next.js standalone binds to $HOSTNAME; Docker sets it to the container
+      # id, so pin it to all interfaces.
+      HOSTNAME: 0.0.0.0
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:3000/api/health" ]
+      test: [ "CMD", "node", "-e", *node-probe, "http://127.0.0.1:3000/api/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 120s
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -177,7 +228,7 @@ services:
   # Sandboxed runtime for user-authored JavaScript flow steps.
   # Isolated on an internal-only network with no host-published port.
   javascript-executor:
-    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-javascript-executor:latest
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-javascript-executor:${IMAGE_TAG:-main}
     platform: linux/amd64
     restart: unless-stopped
     networks:
@@ -205,23 +256,59 @@ services:
       timeout: 10s
       retries: 3
 
+  # PartyKit relay. The image's own entrypoint
+  # (apps/realtime/docker/rootfs/usr/local/bin/docker-entrypoint.sh) writes
+  # REALTIME_BROADCAST_SECRET + NEXT_PUBLIC_BUILDER_URL to apps/realtime/.env
+  # and runs the partykit version pinned in the image.
   realtime:
     <<: [ *network ]
-    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-realtime:latest
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-realtime:${IMAGE_TAG:-main}
     platform: linux/amd64
     restart: unless-stopped
-    entrypoint: >
-      bash -c "
-        cd /app/apps/realtime;
-        echo "REALTIME_BROADCAST_SECRET=$${REALTIME_BROADCAST_SECRET}" > .env;
-        HOSTNAME=${HOSTNAME:-0.0.0.0} PORT=${PORT:-1999} pnpm dlx partykit dev;
-      "
     environment:
-      <<: *common-vars
+      REALTIME_BROADCAST_SECRET: e1aad81f3055b8270d0e2fb5692598ce47b929ab76128b158b46d3ff2de9b6d3
+      # Only used for server-to-server calls (verify-origin, presence reports:
+      # apps/realtime/src/lib/auth.ts, presence-report.ts) — keep it internal.
+      NEXT_PUBLIC_BUILDER_URL: http://builder:3000
+      HOSTNAME: 0.0.0.0
+      PORT: "1999"
     ports:
       - "1999:1999"
+    healthcheck:
+      test: [ "CMD", "node", "-e", *node-probe, "http://127.0.0.1:1999/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Optional MCP server (SSE + streamable HTTP) for AI clients.
+  # Start it with: docker compose --profile mcp up -d
+  mcp:
+    <<: *network
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-mcp:${IMAGE_TAG:-main}
+    platform: linux/amd64
+    restart: unless-stopped
+    profiles: [ "mcp" ]
+    depends_on:
+      builder:
+        condition: service_healthy
+    environment:
+      # The MCP server loads {API_URL}/public-spec.json at boot
+      # (apps/mcp-server/src/openapi-loader.ts).
+      HITECHCLOUDOMNICHANNEL_API_URL: http://builder:3000/api
+      HITECHCLOUDOMNICHANNEL_MCP_TRANSPORT: sse
+      HITECHCLOUDOMNICHANNEL_MCP_HOST: 0.0.0.0
+      HITECHCLOUDOMNICHANNEL_MCP_PORT: "3333"
+    ports:
+      - "3333:3333"
+    healthcheck:
+      test: [ "CMD", "node", "-e", *node-probe, "http://127.0.0.1:3333/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 networks:
   main:

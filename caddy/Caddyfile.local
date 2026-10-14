@@ -1,0 +1,25 @@
+# Local (plain HTTP) proxy used by docker-compose.yml on http://localhost:3123.
+# Production uses caddy/Caddyfile (automatic HTTPS) via docker-compose.prod.yml.
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	# Realtime (PartyKit): browser connects to <app>/ws/parties/<party>/<room>.
+	handle_path /ws/* {
+		reverse_proxy realtime:1999
+	}
+
+	# Public objects: <app>/storage/<key> -> bucket/<key> (anonymous read on public/).
+	handle_path /storage/* {
+		rewrite * /hitechcloudomnichannel{path}?
+		reverse_proxy filesystem:9000 {
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	handle {
+		reverse_proxy builder:3000
+	}
+}
