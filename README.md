@@ -11,87 +11,143 @@
 <p align="center">
   <a href="https://hitechcloud.vn">Website</a>
   ·
-  <a href="https://hitechcloud.vn/docs">Docs</a>
+  <a href="docs/trien-khai-production.md">Hướng dẫn production</a>
   ·
-  <a href="https://discord.hitechcloud.vn/">Discord</a>
+  <a href="https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel">Repo nền tảng</a>
+  ·
+  <a href="mailto:support@hitechcloud.vn">support@hitechcloud.vn</a>
 </p>
 
-## Watch the tutorial for Docker Compose install
+# HiTechCloudOmnichannel — Docker Compose
 
-Follow the **[Quick Start](https://hitechcloud.vn/docs/quickstart)** in the HiTechCloudOmnichannel documentation to go from Docker Compose to a running workspace.
+Bộ triển khai Docker Compose cho **HiTechCloudOmnichannel** — nền tảng chatbot &
+marketing đa kênh (Zalo, Messenger, Instagram, WhatsApp, TikTok, Telegram, Webchat…)
+của HiTechCloud / Công ty CP Giải pháp Phần mềm Phố Tuệ. Repo này chạy các image
+dựng sẵn trên `ghcr.io`; muốn sửa mã nguồn, hãy dùng
+[repo nền tảng](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel).
 
-## Warning
+| Mục đích | Dùng |
+|---|---|
+| Chạy thử trên máy cá nhân | `docker compose up` (file [`docker-compose.yml`](docker-compose.yml)) |
+| **Production trên một server** (HTTPS, sao lưu, nâng cấp) | [`scripts/install.sh`](scripts/install.sh) + [`docker-compose.prod.yml`](docker-compose.prod.yml) — xem **[docs/trien-khai-production.md](docs/trien-khai-production.md)** |
 
-If you are upgrading from an older HiTechCloudOmnichannel version or Compose layout, verify that your compose file and environment variables match the current **[documentation](https://hitechcloud.vn/docs)** before starting services.
+## Image
 
+CI của repo nền tảng (`.github/workflows/release.yml`) đẩy 5 image
+`ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-{builder,worker,realtime,mcp,javascript-executor}`:
 
-## Docker Compose
+- `:main` — mỗi lần push vào `main` (**mặc định**, `IMAGE_TAG=main`);
+- `:X.Y.Z` và `:latest` — chỉ xuất hiện khi tag phát hành `vX.Y.Z` (image tag **không** có chữ `v`).
 
-This guide assumes that you have Docker installed with enough resources to run HiTechCloudOmnichannel (PostgreSQL/TimescaleDB, Redis, RustFS, builder, worker, javascript-executor, and realtime).
+Chọn tag bằng biến `IMAGE_TAG`. Image chỉ có bản `linux/amd64`. Nếu package là
+private, đăng nhập trước (token GitHub classic có scope `read:packages`):
 
-This repository runs the pre-built HiTechCloudOmnichannel images published to `ghcr.io`. If you want to modify HiTechCloudOmnichannel itself, use the **[main repository](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel)** and its local development compose file instead.
-
-This Docker Compose setup has been tested with:
-
-- Virtual Machine, Ubuntu 24.04, 2 GB RAM, 2 vCPUs (baseline; allocate more RAM for comfortable local use).
-
-### Configuration uses environment variables
-
-The containers here are configured with environment variables:
-
-- **Option A** — Edit environment variables under the YAML anchors (`x-environment`, service blocks) in [`docker-compose.yml`](docker-compose.yml).
-- **Option B** — Add a Compose override file (e.g. `docker-compose.override.yml`) layered on top of this project’s compose file.
-- **Option C** — Put a `.env` file next to `docker-compose.yml` for Compose variable substitution (e.g. `POSTGRES_*`, `RUSTFS_*`, `ADMINER_PORT`). (Keep secrets out of Git.)
-
-…or mix the above approaches.
-
-Refer to **[HiTechCloudOmnichannel documentation](https://hitechcloud.vn/docs)** for a full picture of installation, channels, and production settings.
-
-Setup:
-
+```bash
+echo '<TOKEN>' | docker login ghcr.io -u <github-username> --password-stdin
 ```
+
+## Production (tóm tắt)
+
+```bash
+# DNS: DOMAIN và s3.DOMAIN trỏ về server; mở cổng 80/443
 git clone https://github.com/hitechcloud-vietnam/hitechcloudomnichannel-docker-compose.git
 cd hitechcloudomnichannel-docker-compose
+sudo scripts/install.sh            # tạo .env + secret, pull, migrate, khởi động, HTTPS tự động
+scripts/compose.sh ps              # = docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env ps
+scripts/backup.sh                  # sao lưu Postgres + file + .env (đặt cron hằng đêm)
+scripts/upgrade.sh 1.5.0           # sao lưu → pull → migrate → khởi động lại lần lượt
+scripts/restore.sh backups/<thời-điểm>
 ```
 
-Then run:
+Sau khi cài: đăng ký tại `https://DOMAIN/auth/sign-up` bằng `PLATFORM_ADMIN_EMAIL`
+(cần SMTP để xác minh email), rồi cấu hình credentials & webhook của các kênh tại
+`https://DOMAIN/admin/platform-credentials`. Chi tiết: yêu cầu server, DNS, firewall,
+kênh, MCP, sao lưu, nâng cấp, xử lý sự cố —
+**[docs/trien-khai-production.md](docs/trien-khai-production.md)**. Toàn bộ biến môi
+trường có chú thích: [`.env.production.example`](.env.production.example).
+
+## Chạy thử trên máy (local)
+
+Yêu cầu: Docker Desktop / Docker Engine với Compose ≥ 2.24.4, ~4 GB RAM trống.
+
+```bash
+git clone https://github.com/hitechcloud-vietnam/hitechcloudomnichannel-docker-compose.git
+cd hitechcloudomnichannel-docker-compose
+# Để trình duyệt mở được URL upload/download presigned (ký trên http://filesystem:9000):
+echo '127.0.0.1 filesystem' | sudo tee -a /etc/hosts
+docker compose up -d
+```
+
+Đăng nhập bằng tài khoản demo được seed tự động: **demo@example.com / Demo@1234**
+(chỉ ở chế độ local).
+
+| Service | URL |
+|---|---|
+| Ứng dụng (qua proxy Caddy: `/ws/` → realtime, `/storage/` → RustFS) | http://localhost:3123 |
+| Realtime (trực tiếp) | http://localhost:1999 |
+| RustFS | http://localhost:9000 (S3 API); console http://localhost:9001 |
+| MailHog (email gửi đi) | http://localhost:8025 (UI); SMTP `localhost:1025` |
+| Adminer | http://localhost:8080 |
+| Postgres | `localhost:5432` (user/pass `hitechcloudomnichannel` / `secretkey`) |
+| Redis | `localhost:6379` |
+| MCP (tuỳ chọn, `docker compose --profile mcp up -d`) | http://localhost:3333/sse |
+| JavaScript executor | chỉ nội bộ — mạng Docker `internal`, chỉ `worker` gọi được |
+
+> `docker-compose.yml` chứa secret mẫu công khai và publish cổng database — **không**
+> dùng trực tiếp trên server. Production luôn dùng thêm `docker-compose.prod.yml`.
+
+## Cấu trúc repo
 
 ```
-docker compose up
+docker-compose.yml             stack local / cơ sở cho production
+docker-compose.prod.yml        override production (chỉ Caddy mở 80/443, migrate, healthcheck, giới hạn RAM, log rotation)
+.env.production.example        mọi biến môi trường production, chú thích Việt + Anh
+caddy/Caddyfile                reverse proxy production (HTTPS tự động)
+caddy/Caddyfile.local          proxy cho stack local
+caddy/sites-available/         site tuỳ chọn (mcp.caddy) — chép sang sites-enabled/ để bật
+scripts/                       install.sh, backup.sh, restore.sh, upgrade.sh, compose.sh
+docs/trien-khai-production.md  hướng dẫn production đầy đủ (tiếng Việt)
 ```
 
-Wait for the stack to become healthy, then open the app and tooling:
+## Hỗ trợ
 
-| Service              | URL                        |
-|----------------------|----------------------------|
-| Builder              | http://localhost:3123       |
-| Realtime             | http://localhost:1999       |
-| RustFS               | http://localhost:9000 (S3-compatible API); console http://localhost:9001 |
-| MailHog              | http://localhost:8025 (UI); SMTP http://localhost:1025 |
-| Adminer              | http://localhost:8080       |
-| Postgres             | `localhost:5432` (credentials from compose defaults) |
-| Redis                | `localhost:6379`            |
-| JavaScript Executor  | internal only — not published to the host; runs sandboxed user JS on an isolated, internal-only Docker network reachable solely from `worker` |
+- Lỗi / đề xuất: [GitHub Issues](https://github.com/hitechcloud-vietnam/hitechcloudomnichannel-docker-compose/issues)
+- Email: [support@hitechcloud.vn](mailto:support@hitechcloud.vn)
+- Tài liệu nền tảng: thư mục [`docs/`](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel/tree/main/docs) của repo nền tảng
 
 ---
 
-## The `docker-compose.yml` file
+## English summary
 
-The full, current stack definition lives in **[`docker-compose.yml`](docker-compose.yml)** in this repository — that file is the source of truth, so it isn't duplicated here (a copy in this README would inevitably drift out of sync with it).
+Docker Compose distribution of **HiTechCloudOmnichannel**, an omnichannel chatbot &
+marketing platform by HiTechCloud (Pho Tue Software Solutions JSC, Vietnam). It runs
+the pre-built images from `ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-*`
+(`:main` on every push to main — the default `IMAGE_TAG`; `:X.Y.Z`/`:latest` only
+after a `vX.Y.Z` release tag; amd64 only). Private packages require
+`docker login ghcr.io` with a classic token that has `read:packages`.
 
-Notable details worth knowing before you edit it:
-
-- All application images (`builder`, `worker`, `realtime`, `javascript-executor`) are pulled from `ghcr.io/hitechcloud-vietnam/*:latest` — the most recent tagged release. See the file for exact tags.
-- `javascript-executor` sandboxes untrusted, user-authored JavaScript flow steps. It sits on its own `internal: true` network with no host-published port, runs `read_only` with `cap_drop: ALL`, `no-new-privileges`, a small `noexec` tmpfs, and CPU/memory/PID limits. Only `worker` can reach it. Do not remove this isolation when customizing the file.
-- Set `JAVASCRIPT_EXECUTOR_TOKEN` to a real secret (32+ characters) before running this in anything beyond local/throwaway environments.
-
-## About HiTechCloudOmnichannel
-
-HiTechCloudOmnichannel is an open omnichannel chatbot stack for flows, AI agents, broadcasts, and integrations. Source and issue tracking live in the **[main HiTechCloudOmnichannel repository](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel)**.
+- **Local trial:** `docker compose up -d`, add `127.0.0.1 filesystem` to `/etc/hosts`,
+  open http://localhost:3123 and sign in as `demo@example.com` / `Demo@1234`.
+  The file embeds public sample secrets — never use it alone on a server.
+- **Production (single server):** point `DOMAIN` and `s3.DOMAIN` at the server, open
+  ports 80/443, then run `scripts/install.sh`. It writes `.env` (secrets generated with
+  `openssl`), pulls images, runs the database migrations (one-shot `migrate` service
+  using the builder image's Drizzle runner) and starts the stack behind Caddy with
+  automatic HTTPS. Only Caddy publishes ports. Sign up with `PLATFORM_ADMIN_EMAIL`
+  (SMTP is required — sign-up needs e-mail verification) and configure channel
+  credentials/webhooks under `/admin/platform-credentials`.
+- **Operations:** `scripts/backup.sh` (pg_dump + storage/redis volumes + `.env`,
+  rotation), `scripts/restore.sh`, `scripts/upgrade.sh <tag>` (backup → pull →
+  migrate → one-by-one restart), `scripts/compose.sh` (compose wrapper).
+- Full guide (Vietnamese): [docs/trien-khai-production.md](docs/trien-khai-production.md);
+  every variable is documented in [`.env.production.example`](.env.production.example).
+- Support: GitHub issues or [support@hitechcloud.vn](mailto:support@hitechcloud.vn).
 
 ## License
 
-This repository is released under the **[MIT License](LICENSE)**. The main HiTechCloudOmnichannel application (see the **[main repository](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel)**) is MIT-licensed as well, with enterprise features under a separate Commercial License.
+Repo này phát hành theo **[MIT License](LICENSE)**. Ứng dụng HiTechCloudOmnichannel
+(xem [repo nền tảng](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel))
+cũng theo MIT, riêng các tính năng enterprise theo Commercial License.
 
-This Docker Compose readme follows HiTechCloudOmnichannel documentation patterns (tutorial and warnings upfront, Compose prerequisites, environment-variable options, and clone/run workflow).
-
+This repository is released under the **[MIT License](LICENSE)**. The main application
+is MIT-licensed as well, with enterprise features under a separate Commercial License.
