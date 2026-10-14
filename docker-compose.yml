@@ -38,7 +38,7 @@ x-environment: &common-vars
 
 x-worker: &worker
   <<: [ *network, *depends-datastores ]
-  image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-worker:latest
+  image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-worker:latest
   platform: linux/amd64
   restart: unless-stopped
   extra_hosts:
@@ -142,7 +142,7 @@ services:
 
   builder:
     <<: [ *network, *depends-datastores ]
-    image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-builder:latest
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-builder:latest
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -177,7 +177,7 @@ services:
   # Sandboxed runtime for user-authored JavaScript flow steps.
   # Isolated on an internal-only network with no host-published port.
   javascript-executor:
-    image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-javascript-executor:latest
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-javascript-executor:latest
     platform: linux/amd64
     restart: unless-stopped
     networks:
@@ -207,7 +207,7 @@ services:
 
   realtime:
     <<: [ *network ]
-    image: ghcr.io/hitechcloudomnichannelio/hitechcloudomnichannel-realtime:latest
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-realtime:latest
     platform: linux/amd64
     restart: unless-stopped
     entrypoint: >
