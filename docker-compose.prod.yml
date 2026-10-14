@@ -1,0 +1,279 @@
+# HiTechCloudOmnichannel — single-server production override.
+#
+# Always used together with docker-compose.yml and a filled-in .env
+# (copy .env.production.example, or let scripts/install.sh generate it):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env <command>
+#
+# Requires Docker Compose >= 2.24.4 (uses the !reset / !override YAML tags).
+#
+# What this override changes compared with the local stack:
+#   * only Caddy publishes ports (80/443, automatic HTTPS); every other
+#     service lives on internal Docker networks;
+#   * every secret / URL comes from .env (nothing hard-coded);
+#   * a one-shot `migrate` service runs the builder image's migration runner
+#     (`docker-entrypoint.sh migrate` → migrate-runner/scripts/run-migrations.mjs)
+#     before builder / worker start; RUN_DB_MIGRATE / RUN_DB_SEED are off;
+#   * image tag pinned through IMAGE_TAG, restart policies, healthchecks,
+#     log rotation, memory limits and persistent volumes.
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+x-restart: &restart
+  restart: unless-stopped
+
+# Derived values shared by builder and worker. Everything else (secrets,
+# SMTP, optional tuning) is read from .env through `env_file`, so optional
+# variables that stay commented out in .env are simply not set.
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}?schema=public
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379
+  BETTER_AUTH_URL: https://${DOMAIN:?set DOMAIN in .env}
+  NEXT_PUBLIC_BUILDER_URL: https://${DOMAIN}
+  NEXT_PUBLIC_INTERNAL_STORAGE_URL: https://${DOMAIN}/storage/
+  FORCE_PUBLIC_HTTPS: "true"
+  S3_ENDPOINT: ${S3_ENDPOINT:-https://${S3_DOMAIN:?set S3_DOMAIN in .env}}
+  REALTIME_INTERNAL_URL: http://realtime:1999
+  JAVASCRIPT_EXECUTOR_URL: http://javascript-executor:3210
+  RUN_DB_MIGRATE: "false"
+  RUN_DB_SEED: "false"
+
+x-app-env-file: &app-env-file
+  env_file:
+    - path: .env
+      required: true
+
+services:
+  postgres:
+    <<: [ *logging, *restart ]
+    ports: !reset []
+    shm_size: 1g
+    environment: !override
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEM_LIMIT:-2g}
+
+  redis:
+    <<: [ *logging, *restart ]
+    ports: !reset []
+    # AOF persistence + noeviction: BullMQ queues must never be evicted.
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --appendfsync everysec --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEM_LIMIT:-1g}
+
+  filesystem:
+    <<: [ *logging, *restart ]
+    ports: !reset []
+    environment: !override
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID in .env}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY in .env}
+      RUSTFS_API_CORS_ALLOW_ORIGIN: https://${DOMAIN}
+    extra_hosts: !reset []
+    deploy:
+      resources:
+        limits:
+          memory: ${FILESYSTEM_MEM_LIMIT:-1g}
+
+  filesystem-init:
+    <<: *logging
+    restart: "no"
+    environment: !override
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET:?set S3_BUCKET in .env}
+    # Idempotent: create the bucket and allow anonymous READ (not write) of
+    # the public/ prefix only. Fails loudly instead of continuing silently.
+    entrypoint: !override
+      - /bin/sh
+      - -ec
+      - |
+        rc alias set local http://filesystem:9000 "$$RUSTFS_ACCESS_KEY" "$$RUSTFS_SECRET_KEY"
+        rc mb "local/$$S3_BUCKET" --ignore-existing
+        touch /tmp/empty
+        rc cp /tmp/empty "local/$$S3_BUCKET/public/"
+        rc anonymous set download "local/$$S3_BUCKET/public"
+        echo "Bucket $$S3_BUCKET ready."
+
+  # Dev-only tools: never started in production (no profile enables them).
+  adminer:
+    profiles: [ "dev-tools" ]
+    ports: !reset []
+  mailhog:
+    profiles: [ "dev-tools" ]
+    ports: !reset []
+
+  # One-shot database migration using the builder image's bundled Drizzle
+  # runner (apps/builder/docker/rootfs/usr/local/bin/docker-entrypoint.sh
+  # `migrate` → node /app/migrate-runner/scripts/run-migrations.mjs). It takes
+  # a Postgres advisory lock, so a concurrent run simply waits. Re-running it
+  # is a no-op when nothing is pending.
+  migrate:
+    <<: *logging
+    image: ghcr.io/hitechcloud-vietnam/hitechcloudomnichannel-builder:${IMAGE_TAG:-main}
+    platform: linux/amd64
+    command: [ "migrate" ]
+    restart: "no"
+    networks:
+      - main
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+
+  builder:
+    <<: [ *logging, *restart, *app-env-file ]
+    ports: !reset []
+    extra_hosts: !reset []
+    environment: !override
+      <<: *app-environment
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      filesystem:
+        condition: service_healthy
+      filesystem-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: ${BUILDER_MEM_LIMIT:-2g}
+
+  worker:
+    <<: [ *logging, *restart, *app-env-file ]
+    extra_hosts: !reset []
+    environment: !override
+      <<: *app-environment
+      # `worker all` starts one Node process per queue (~15), so keep each heap modest.
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max_old_space_size=1024}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      filesystem:
+        condition: service_healthy
+      filesystem-init:
+        condition: service_completed_successfully
+      javascript-executor:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # BullMQ: give in-flight jobs time to finish on restart/upgrade.
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${WORKER_MEM_LIMIT:-4g}
+
+  javascript-executor:
+    <<: [ *logging, *restart ]
+    environment: !override
+      JAVASCRIPT_EXECUTOR_TOKEN: ${JAVASCRIPT_EXECUTOR_TOKEN:?set JAVASCRIPT_EXECUTOR_TOKEN in .env}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-2}
+
+  realtime:
+    <<: [ *logging, *restart ]
+    ports: !reset []
+    extra_hosts: !reset []
+    environment: !override
+      REALTIME_BROADCAST_SECRET: ${REALTIME_BROADCAST_SECRET:?set REALTIME_BROADCAST_SECRET in .env}
+      # Server-to-server only (verify-origin, presence reports).
+      NEXT_PUBLIC_BUILDER_URL: http://builder:3000
+      HOSTNAME: 0.0.0.0
+      PORT: "1999"
+    deploy:
+      resources:
+        limits:
+          memory: ${REALTIME_MEM_LIMIT:-1g}
+
+  mcp:
+    <<: [ *logging, *restart ]
+    ports: !reset []
+    environment: !override
+      HITECHCLOUDOMNICHANNEL_API_URL: http://builder:3000/api
+      HITECHCLOUDOMNICHANNEL_MCP_TRANSPORT: sse
+      HITECHCLOUDOMNICHANNEL_MCP_HOST: 0.0.0.0
+      HITECHCLOUDOMNICHANNEL_MCP_PORT: "3333"
+      HITECHCLOUDOMNICHANNEL_MCP_CORS_ORIGIN: ${MCP_CORS_ORIGIN:-*}
+      HITECHCLOUDOMNICHANNEL_MCP_SERVER_NAME: ${MCP_SERVER_NAME:-HiTechCloudOmnichannel MCP Server}
+    deploy:
+      resources:
+        limits:
+          memory: ${MCP_MEM_LIMIT:-512m}
+
+  # Edge proxy: the only service with published ports.
+  proxy:
+    <<: [ *logging, *restart ]
+    ports: !override
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes: !override
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/sites-enabled:/etc/caddy/sites-enabled:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      DOMAIN: ${DOMAIN}
+      S3_DOMAIN: ${S3_DOMAIN}
+      S3_BUCKET: ${S3_BUCKET}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      MCP_DOMAIN: ${MCP_DOMAIN:-}
+    # Containers on `main` resolve the public host names to Caddy directly,
+    # so server-side calls to https://DOMAIN and https://S3_DOMAIN (S3 SDK,
+    # self-fetches) never leave the host and always hit a valid certificate.
+    networks: !override
+      main:
+        aliases:
+          - ${DOMAIN}
+          - ${S3_DOMAIN}
+    depends_on: !override
+      builder:
+        condition: service_started
+      realtime:
+        condition: service_started
+      filesystem:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:2019/config/" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: ${PROXY_MEM_LIMIT:-256m}
+
+volumes:
+  caddy-data:
+  caddy-config:
