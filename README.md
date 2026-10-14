@@ -1,28 +1,28 @@
 <p align="center">
   <a href="https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel" target="_blank" rel="noopener">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://hitechcloud.vn/wp-content/uploads/2025/01/hitechcloudvn.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://hitechcloud.vn/wp-content/uploads/2025/01/hitechcloudvn.svg">
-      <img alt="HiTechCloudOmnichannel Logo" src="https://hitechcloud.vn/wp-content/uploads/2025/01/hitechcloudvn.svg" width="280">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/hitechcloudomnichannel-logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset=".github/assets/readme/hitechcloudomnichannel-logo-light.svg">
+      <img alt="HiTechCloudOmnichannel Logo" src=".github/assets/readme/hitechcloudomnichannel-logo-light.svg" width="280">
     </picture>
   </a>
 </p>
 
 <p align="center">
-  <a href="https://HiTechCloudOmnichannel.io">Website</a>
+  <a href="https://hitechcloud.vn">Website</a>
   ·
-  <a href="https://app.hitechcloud.vn/docs">Docs</a>
+  <a href="https://hitechcloud.vn/docs">Docs</a>
   ·
-  <a href="https://discord.app.hitechcloud.vn/">Discord</a>
+  <a href="https://discord.hitechcloud.vn/">Discord</a>
 </p>
 
 ## Watch the tutorial for Docker Compose install
 
-Follow the **[Quick Start](https://app.hitechcloud.vn/docs/quickstart)** in the HiTechCloudOmnichannel documentation to go from Docker Compose to a running workspace.
+Follow the **[Quick Start](https://hitechcloud.vn/docs/quickstart)** in the HiTechCloudOmnichannel documentation to go from Docker Compose to a running workspace.
 
 ## Warning
 
-If you are upgrading from an older HiTechCloudOmnichannel version or Compose layout, verify that your compose file and environment variables match the current **[documentation](https://HiTechCloudOmnichannel.io/docs)** before starting services.
+If you are upgrading from an older HiTechCloudOmnichannel version or Compose layout, verify that your compose file and environment variables match the current **[documentation](https://hitechcloud.vn/docs)** before starting services.
 
 
 ## Docker Compose
@@ -45,13 +45,13 @@ The containers here are configured with environment variables:
 
 …or mix the above approaches.
 
-Refer to **[HiTechCloudOmnichannel documentation](https://app.hitechcloud.vn/docs)** for a full picture of installation, channels, and production settings.
+Refer to **[HiTechCloudOmnichannel documentation](https://hitechcloud.vn/docs)** for a full picture of installation, channels, and production settings.
 
 Setup:
 
 ```
-git clone https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel-docker-compose.git
-cd HiTechCloudOmnichannel-docker-compose
+git clone https://github.com/hitechcloud-vietnam/hitechcloudomnichannel-docker-compose.git
+cd hitechcloudomnichannel-docker-compose
 ```
 
 Then run:
@@ -94,3 +94,4 @@ HiTechCloudOmnichannel is an open omnichannel chatbot stack for flows, AI agents
 This repository is released under the **[MIT License](LICENSE)**. The main HiTechCloudOmnichannel application (see the **[main repository](https://github.com/hitechcloud-vietnam/HiTechCloudOmnichannel)**) is MIT-licensed as well, with enterprise features under a separate Commercial License.
 
 This Docker Compose readme follows HiTechCloudOmnichannel documentation patterns (tutorial and warnings upfront, Compose prerequisites, environment-variable options, and clone/run workflow).
+
