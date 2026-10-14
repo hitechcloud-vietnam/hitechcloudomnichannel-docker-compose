@@ -1,0 +1,7 @@
+# Production secrets and data
+.env
+.env.*
+!.env.production.example
+backups/
+# Enabled optional Caddy sites are local choices
+caddy/sites-enabled/*.caddy

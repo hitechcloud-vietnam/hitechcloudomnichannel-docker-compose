@@ -1,0 +1,12 @@
+# MCP server (SSE at /sse, streamable HTTP / JSON-RPC at /messages).
+# Enable:  cp caddy/sites-available/mcp.caddy caddy/sites-enabled/
+#          set MCP_DOMAIN + COMPOSE_PROFILES=mcp in .env, then
+#          docker compose ... up -d
+# Clients authenticate per request with a workspace API token
+# (?workspace_token=... or the x-workspace-token header,
+# apps/mcp-server/src/server/sse-server.ts). No access log here, so tokens
+# passed in the query string are not written to disk.
+{$MCP_DOMAIN} {
+	import security_headers
+	reverse_proxy mcp:3333
+}

@@ -1,0 +1,134 @@
+# HiTechCloudOmnichannel — production reverse proxy (automatic HTTPS).
+#
+# Values come from the caddy container environment, which
+# docker-compose.prod.yml fills from .env:
+#   DOMAIN       app host, e.g. app.example.com           (required)
+#   S3_DOMAIN    object-storage host, e.g. s3.app.example.com (required)
+#   ACME_EMAIL   Let's Encrypt / ZeroSSL account e-mail   (required)
+#   S3_BUCKET    bucket name                              (required)
+#   MCP_DOMAIN   only used by sites-available/mcp.caddy   (optional)
+#
+# Both DOMAIN and S3_DOMAIN must resolve (A/AAAA) to this server and ports
+# 80 + 443 must be reachable from the Internet before the first start.
+{
+	email {$ACME_EMAIL}
+	# Admin API stays on localhost inside the container (used by the healthcheck).
+	admin localhost:2019
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+# Anonymous, read-only access to objects under the bucket's public/ prefix.
+# The app builds public file URLs as <app>/storage/public/... (packages/
+# business/src/platform/derive-urls.ts + packages/filesystem/src/lib/helper.ts).
+# Only GET/HEAD of a concrete key is allowed; the query string is dropped, so
+# no S3 sub-resource or bucket listing is reachable through this path.
+(public_objects) {
+	@object {
+		method GET HEAD
+		path /public/*
+	}
+	handle @object {
+		rewrite * /{$S3_BUCKET}{path}?
+		reverse_proxy filesystem:9000 {
+			header_up Host {upstream_hostport}
+		}
+	}
+	respond 404
+}
+
+# ── Application ─────────────────────────────────────────────────────────────
+{$DOMAIN} {
+	import security_headers
+
+	request_body {
+		max_size 100MB
+	}
+
+	# Realtime (PartyKit). The browser connects to wss://DOMAIN/ws/parties/<party>/<room>
+	# (publicRealtimeUrl = <app>/ws/); PartyKit itself serves /parties/...
+	handle_path /ws/* {
+		reverse_proxy realtime:1999
+	}
+
+	# Public files.
+	handle_path /storage/* {
+		import public_objects
+	}
+
+	# Legacy alias: apps/builder/next.config.ts rewrites /assets/* to the
+	# storage URL, but that rewrite is baked in at image build time with a
+	# localhost URL, so serve it here instead.
+	handle_path /assets/* {
+		import public_objects
+	}
+
+	# Everything else: Next.js builder (UI, /api/*, /integrations/*/webhook,
+	# /integrations/*/callback, /api/auth/callback/*, /admin, ...).
+	handle {
+		reverse_proxy builder:3000
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# ── S3-compatible object storage (RustFS) ───────────────────────────────────
+# Needed because presigned upload/download URLs are signed against
+# S3_ENDPOINT (packages/filesystem/src/lib/uploader.ts) and are opened directly
+# by the browser (media library, imports, /media/attachment redirects).
+# Every request except anonymous GET of public/ objects must be SigV4-signed.
+{$S3_DOMAIN} {
+	import security_headers
+
+	request_body {
+		max_size 1GB
+	}
+
+	# Unsigned bucket listing (would enumerate every public file) is refused.
+	@anonymous_listing {
+		path /{$S3_BUCKET} /{$S3_BUCKET}/
+		not header Authorization *
+		not query X-Amz-Credential=*
+	}
+	respond @anonymous_listing 403
+
+	# CORS for browser PUT/GET with presigned URLs from the app origin (and
+	# white-label custom domains). The signature, not CORS, is the access control.
+	@cors_preflight {
+		method OPTIONS
+		header Origin *
+	}
+	handle @cors_preflight {
+		header {
+			Access-Control-Allow-Origin "{header.Origin}"
+			Access-Control-Allow-Methods "GET, HEAD, PUT, POST"
+			Access-Control-Allow-Headers "*"
+			Access-Control-Max-Age "3600"
+			Vary "Origin"
+		}
+		respond 204
+	}
+
+	@cors header Origin *
+	header @cors {
+		>Access-Control-Allow-Origin "{header.Origin}"
+		>Access-Control-Expose-Headers "ETag"
+		>Vary "Origin"
+	}
+
+	reverse_proxy filesystem:9000
+}
+
+# Optional extra sites (e.g. the MCP server). Copy a file from
+# caddy/sites-available/ into caddy/sites-enabled/ to enable it.
+import /etc/caddy/sites-enabled/*.caddy
